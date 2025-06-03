@@ -1,22 +1,3 @@
-#!/usr/bin/env python3
-"""
-Практика 4 — Прокси‑сервер (HTTP 1.1)
-=====================================
-• Поддержка методов **GET** и **POST**
-• Журналирование (URL + код ответа) в *proxy.log*
-• Дисковый кеш (директория *cache/*) + Conditional GET (ETag / Last‑Modified)
-• Черный список доменов/URL‑ов (*blacklist.txt*)
-• Обработка ошибок (404, 500, и т.п.)
-
-Запуск
-------
-```bash
-python proxy_server.py 8888   # порт 8888 можно поменять
-```
-
-После запуска прокси‑сервер слушает все интерфейсы (0.0.0.0) и обслуживает
-одновременные подключения в отдельных потоках.
-"""
 import socket
 import threading
 import logging
@@ -30,20 +11,13 @@ CACHE_DIR = "cache"
 LOG_FILE = "proxy.log"
 BLACKLIST_FILE = "blacklist.txt"
 
-# ------------------------------------------------------------
-#  Настройка журналирования
-# ------------------------------------------------------------
 logging.basicConfig(
     filename=LOG_FILE,
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s")
 
-# ------------------------------------------------------------
-#  Чтение файлa черного списка
-# ------------------------------------------------------------
 
 def load_blacklist():
-    """Возвращает set из строк‑шаблонов (в нижнем регистре)."""
     if not os.path.exists(BLACKLIST_FILE):
         return set()
     with open(BLACKLIST_FILE, "r", encoding="utf‑8") as f:
@@ -53,18 +27,13 @@ BLACKLIST = load_blacklist()
 
 
 def in_blacklist(url: str) -> bool:
-    """Проверяем, содержит ли URL или host что‑то из BLACKLIST."""
     parsed = urllib.parse.urlparse(url)
     host = (parsed.hostname or "").lower()
     url_l = url.lower()
     return any(pat in host or pat in url_l for pat in BLACKLIST)
 
-# ------------------------------------------------------------
-#  Утилиты для кеша
-# ------------------------------------------------------------
 
 def cache_path(url: str) -> str:
-    """Путь к файлу ответа."""
     fname = urllib.parse.quote_plus(url)
     return os.path.join(CACHE_DIR, fname)
 
@@ -105,12 +74,8 @@ def conditional_headers(url: str) -> dict:
         hdrs["If-Modified-Since"] = meta["last-modified"]
     return hdrs
 
-# ------------------------------------------------------------
-#  Низкоуровневый обмен с удалённым сервером
-# ------------------------------------------------------------
 
 def recv_all(sock):
-    """Читаем поток до закрытия сокета."""
     data = bytearray()
     while True:
         chunk = sock.recv(BUFFER_SIZE)
@@ -130,31 +95,22 @@ def forward_http(method: str, url: str, version: str, hdrs: dict, body: bytes):
     if parsed.query:
         path += "?" + parsed.query
 
-    # Обновляем/дополняем заголовки
     hdrs = {k: v for k, v in hdrs.items() if k.lower() != "proxy-connection"}
     hdrs["Host"] = host
     hdrs["Connection"] = "close"
-    # Добавляем conditional‑заголовки при наличии кеша (только для GET)
     if method == "GET":
         hdrs.update(conditional_headers(url))
 
-    # Сборка raw‑запроса
     req_lines = [f"{method} {path} {version}"] + [f"{k}: {v}" for k, v in hdrs.items()] + ["", ""]
     raw_req = "\r\n".join(req_lines).encode() + body
 
-    # Отправляем
     with socket.create_connection((host, port)) as upstream:
         upstream.sendall(raw_req)
         return recv_all(upstream)
 
-# ------------------------------------------------------------
-#  Ключевой обработчик клиентского соединения
-# ------------------------------------------------------------
-
 def handle_client(client, addr):
     print(f"[DEBUG] New connection from {addr}")
     try:
-        # 1) Читаем заголовки клиента
         buff = bytearray()
         while b"\r\n\r\n" not in buff:
             chunk = client.recv(BUFFER_SIZE)
@@ -184,18 +140,15 @@ def handle_client(client, addr):
             body = b""
         method = method.upper()
 
-        # 3) Blacklist check
         if in_blacklist(url):
             msg = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 25\r\nContent-Type: text/plain\r\n\r\nBlocked by proxy server."
             client.sendall(msg)
             logging.info(f"BLOCK {url}")
             return
 
-        # 4) Кеш‑логика для GET
         if method == "GET":
             cached = cached_response(url)
             if cached:
-                # Пытаемся валидировать через conditional GET
                 resp = forward_http(method, url, version, headers, b"")
                 code = int(resp.split(b" ")[1])
                 if code == 304:  # Not Modified
@@ -210,12 +163,10 @@ def handle_client(client, addr):
                     logging.info(f"CACHE‑UPDATE {url} -> {code}")
                     return
 
-        # 5) Обычный проксирование (или POST / cache‑MISS)
         resp = forward_http(method, url, version, headers, body)
         code = int(resp.split(b" ")[1])
         client.sendall(resp)
 
-        # 6) Сохраняем в кеш, если GET 200
         if method == "GET" and code == 200:
             head = resp.split(b"\r\n\r\n", 1)[0]
             save_response_to_cache(url, resp, parse_headers(head))
@@ -224,8 +175,6 @@ def handle_client(client, addr):
 
 
     except Exception as e:
-
-        # Печатаем стек трассировки прямо в консоль, чтобы видеть, где возникла ошибка:
 
         import traceback
 
@@ -247,10 +196,6 @@ def handle_client(client, addr):
     finally:
         client.close()
 
-# ------------------------------------------------------------
-#  Парсер заголовков (для кеш‑метаданных)
-# ------------------------------------------------------------
-
 def parse_headers(raw: bytes) -> dict:
     headers = {}
     for line in raw.decode(errors="replace").split("\r\n")[1:]:
@@ -258,10 +203,6 @@ def parse_headers(raw: bytes) -> dict:
             k, v = line.split(":", 1)
             headers[k.lower()] = v.strip()
     return headers
-
-# ------------------------------------------------------------
-#  Точка входа
-# ------------------------------------------------------------
 
 def main():
     if len(sys.argv) != 2:
@@ -286,9 +227,3 @@ def main():
 if __name__ == "__main__":
     main()
 
-# ------------------------------------------------------------
-#  Пример файла blacklist.txt (положите рядом со скриптом)
-# ------------------------------------------------------------
-# facebook.com
-# vk.com
-# example.org/bad‑page
